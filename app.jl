@@ -30,110 +30,6 @@ function redact(s::AbstractString)
     return s
 end
 
-# Parse Playwright "results.json" → (run_context::Dict, tests::Vector{Dict})
-function parse_playwright_all(body::Vector{UInt8})
-    data = JSON.parse(String(body))::Dict{String,Any}
-    tests = Vector{Dict{String,Any}}()
-    per_suite = Dict{String,Tuple{Int,Int}}()  # suite -> (passed, failed)
-
-    full_title(node::Dict{String,Any}, titles::Vector{String}) = begin
-        if haskey(node,"titlePath") && (node["titlePath"] isa Vector)
-            join(String.(node["titlePath"]), " ")
-        else
-            t = haskey(node,"title") ? String(node["title"]) : "test"
-            join(vcat(titles, [t]), " ")
-        end
-    end
-
-    function walk(node, titles::Vector{String}=String[], file::String="")
-        if node isa Dict{String,Any}
-            t2 = copy(titles)
-            if haskey(node,"title") && (node["title"] isa AbstractString)
-                push!(t2, String(node["title"]))
-            end
-            f2 = file
-            if haskey(node,"file") && (node["file"] isa AbstractString)
-                f2 = String(node["file"])
-            elseif haskey(node,"location") && (node["location"] isa Dict{String,Any}) && haskey(node["location"],"file")
-                f2 = String(node["location"]["file"])
-            end
-
-            if haskey(node,"results") && (node["results"] isa Vector) && (haskey(node,"title") || haskey(node,"titlePath"))
-                title = full_title(node, t2)
-                id = isempty(f2) ? title : string(f2,"::",title)
-                results = Vector{Any}(node["results"])
-                final_status = "passed"
-                duration_ms = 0
-                err_type = ""
-                err_msg  = ""
-                any_pass = false
-                tries = 0
-
-                for res_any in results
-                    res = res_any::Dict{String,Any}
-                    st = haskey(res,"status") ? String(res["status"]) :
-                         (haskey(res,"outcome") ? String(res["outcome"]) : final_status)
-                    final_status = st
-
-                    d = haskey(res,"durationMs") ? Int(res["durationMs"]) :
-                        (haskey(res,"duration") ? Int(res["duration"]) : 0)
-                    duration_ms = max(duration_ms, d)
-
-                    err = haskey(res,"error") ? res["error"] :
-                          (haskey(res,"errors") && (res["errors"] isa Vector) && !isempty(res["errors"]) ? res["errors"][1] : nothing)
-                    if err isa Dict{String,Any}
-                        msg = string(get(err,"message",""), " ", get(err,"stack",""))
-                        if !isempty(msg) && isempty(err_msg)
-                            err_msg = msg
-                        end
-                        et = get(err, "name", get(err, "type", ""))
-                        if (et isa AbstractString) && isempty(err_type)
-                            err_type = String(et)
-                        end
-                    end
-
-                    any_pass |= (st == "passed")
-                    tries += 1
-                end
-
-                status = (final_status in ("failed","timedOut","interrupted","unexpected") || !isempty(err_msg)) ? "failed" : "passed"
-                t = Dict("test_id"=>id, "status"=>status, "time_ms"=>duration_ms)
-                if status == "failed"
-                    msg = redact(err_msg)
-                    msg = msg[1:min(end,300)]
-                    t["err_type"] = err_type
-                    t["err_msg"]  = msg
-                    t["retries"]  = max(tries-1, 0)
-                    t["passed_on_retry"] = any_pass
-                end
-                push!(tests, t)
-                per_suite[f2] = get(per_suite, f2, (0,0)) .+ (status=="passed" ? (1,0) : (0,1))
-            end
-
-            for (_,v) in node
-                if v isa Dict{String,Any} || v isa Vector
-                    walk(v, t2, f2)
-                end
-            end
-        elseif node isa Vector
-            for v in node
-                walk(v, titles, file)
-            end
-        end
-    end
-
-    walk(data)
-    total = length(tests)
-    failed = count(t -> t["status"]=="failed", tests)
-    per_suite_arr = [Dict("suite"=>k, "passed"=>p, "failed"=>f) for (k,(p,f)) in per_suite]
-    run_ctx = Dict(
-        "total_tests"=>total,
-        "failed"=>failed,
-        "pass_rate" => total==0 ? 0.0 : round((total-failed)/total; digits=3),
-        "per_suite" => per_suite_arr,
-    )
-    return run_ctx, tests
-end
 
 function call_sage(payload_json::String)
     prompt = """
@@ -189,7 +85,7 @@ function page_html(; url_value::String="",
   </div>
   $err_html
   <div class="cols">
-    <div class="card"><div class="title">Errors summary</div><pre>$(summary)</pre></div>
+    <div class="card"><div class="title">Fetched content</div><pre>$(summary)</pre></div>
     <div class="card"><div class="title">Claude response</div><pre>$(replace(llm, "&"=>"&amp;"))</pre></div>
   </div>
 </body></html>
@@ -211,32 +107,18 @@ route("/analyze", method = POST) do
     end
 
     try
-        body = fetch_bytes(url)
-        run_ctx, tests = parse_playwright_all(body)
-
-        # compact payload; trim failed messages
-        for t in tests
-            if t["status"] == "failed" && haskey(t, "err_msg")
-                msg = String(t["err_msg"])
-                t["err_msg"] = msg[1: min(end, 300)]
-            end
+        body = fetch_bytes(url)  # Vector{UInt8}
+        # Try to show as UTF-8 text; fallback to Base64 if binary
+        content = try
+            String(body)
+        catch
+            "Binary content (" * string(sizeof(body)) * " bytes). Base64 below:\n\n" * base64encode(body)
         end
-        payload = JSON.json(Dict("run_context"=>run_ctx, "tests"=>tests))
-        out = call_sage(payload)
-
-        # summary (left)
-        head = "total=$(run_ctx["total_tests"]) failed=$(run_ctx["failed"]) pass_rate=$(run_ctx["pass_rate"])\n\n"
-        buf = IOBuffer()
-        for t in tests
-            if t["status"] == "failed"
-                println(buf, "[", t["test_id"], "] time=", t["time_ms"], "ms")
-                println(buf, "  ", get(t,"err_type",""), " :: ", get(t,"err_msg",""), "\n")
-            end
-        end
-        summary = head * String(take!(buf))
-
-        # render the same page with results and keep URL in the box
-        html(page_html(url_value=url, summary=summary, llm=out))
+        # Escape before injecting into HTML
+        content_escaped = escape_html(content)
+        info = "Fetched $(sizeof(body)) bytes from:\n" * escape_html(url) * "\n\n"
+        summary = info * content_escaped
+        html(page_html(url_value=url, summary=summary, llm=""))
 
     catch e
         # show friendly inline error banner, stay on page
