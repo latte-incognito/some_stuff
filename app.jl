@@ -2,7 +2,6 @@ using Genie, Genie.Router, Genie.Renderer.Html, Genie.Requests
 using HTTP, JSON
 
 const MAX_MB = 15
-const SAGE_CMD = `sage chat --model claude-3-5-sonnet --input -`  # change model if you want
 
 # tiny helpers
 escape_html(s::AbstractString) = replace(String(s), "&"=>"&amp;", "<"=>"&lt;", ">"=>"&gt;")
@@ -30,27 +29,19 @@ function redact(s::AbstractString)
     return s
 end
 
-
-function call_sage(payload_json::String)
-    prompt = """
-You are a strict classifier for Playwright test results.
-Input JSON has {run_context, tests}. Return ONLY a JSON array for FAILED tests:
-{
-  "test_id": "...",
-  "verdict": "Likely Flaky"|"Likely Real Bug"|"Unknown",
-  "confidence": 0..1,
-  "reason": "timeout|selector|network|assert|app-error|client-4xx|other",
-  "rationale": "1–2 sentences using run_context & sibling pass info",
-  "next_action": "one practical step"
-}
-JSON only.
 """
-    txt = prompt * "\nInput:\n" * payload_json
-    # Capture stdout; many CLIs print clean JSON to stdout
-    out = read(pipeline(SAGE_CMD; stdin=IOBuffer(txt)), String)
-    # Slice from first '[' or '{' in case CLI prints headers
-    s = findfirst('[', out); s === nothing && (s = findfirst('{', out))
-    return s === nothing ? out : out[first(s):end]
+call_llm(url::String, headers::Dict, payload::Dict) -> String
+
+Sends a POST request with given headers and JSON payload.
+Returns the body as String (UTF-8).
+"""
+function call_llm(url::String, headers::Dict{String,String}, payload::Dict)
+    data = JSON.json(payload)
+    r = HTTP.post(url; headers=headers, body=data)
+    if r.status ÷ 100 != 2
+        error("LLM request failed: HTTP $(r.status)")
+    end
+    return String(r.body)
 end
 
 # ── UI (same dark/violet theme) ───────────────────────────────────────────────
@@ -118,7 +109,24 @@ route("/analyze", method = POST) do
         content_escaped = escape_html(content)
         info = "Fetched $(sizeof(body)) bytes from:\n" * escape_html(url) * "\n\n"
         summary = info * content_escaped
-        html(page_html(url_value=url, summary=summary, llm=""))
+
+        # Prepare your LLM payload (whatever JSON you want to send)
+        payload = Dict("input" => content)  # here `content` is the fetched body string
+
+        # Change headers here
+        headers = Dict(
+            "Content-Type"  => "application/json",
+            "Accept"        => "application/json",
+            "X-Api-Key"     => "mykey",
+            "User-Agent"    => "Julia-Client/1.0"
+        )
+
+        llm_response = call_llm("https://example.com/endpoint", headers, payload)
+
+        # escape to avoid HTML injection
+        llm_html = escape_html(llm_response)
+
+        html(page_html(url_value=url, summary=summary, llm=llm_html))
 
     catch e
         # show friendly inline error banner, stay on page
