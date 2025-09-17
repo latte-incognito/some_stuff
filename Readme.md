@@ -18,5 +18,7 @@ julia --project=. -e 'using Pkg;
 
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 
+`export MY_LLM_KEY="sk-123..."`
+
 julia --project=. app.jl
 # open http://127.0.0.1:8080

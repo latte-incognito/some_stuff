@@ -113,11 +113,15 @@ route("/analyze", method = POST) do
         # Prepare your LLM payload (whatever JSON you want to send)
         payload = Dict("input" => content)  # here `content` is the fetched body string
 
+        api_key = get(ENV, "MY_LLM_KEY", nothing)
+        if api_key === nothing
+            error("Environment variable MY_LLM_KEY is not set")
+        end
         # Change headers here
         headers = Dict(
             "Content-Type"  => "application/json",
             "Accept"        => "application/json",
-            "X-Api-Key"     => "mykey",
+            "X-Api-Key"     => "$api_key",
             "User-Agent"    => "Julia-Client/1.0"
         )
 
