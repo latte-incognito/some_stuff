@@ -8,6 +8,12 @@ escape_html(s::AbstractString) = replace(String(s), "&"=>"&amp;", "<"=>"&lt;", "
 escape_attr(s::AbstractString) = replace(escape_html(s), "\""=>"&quot;")
 is_valid_url(url::String) = startswith(url, "http://") || startswith(url, "https://")
 
+function escape_html_safe(s::AbstractString)
+    s = replace(String(s), "&"=>"&amp;", "<"=>"&lt;", ">"=>"&gt;", "\"" => "&quot;")
+    s = replace(s, "\$" => "\\\$")  # escape dollar sign for Genie-generated Julia code
+    return s
+end
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 function fetch_bytes(url::String; max_mb::Int = MAX_MB)
     r = HTTP.get(url; retry=false, status_exception=false, readtimeout=30)
@@ -19,14 +25,6 @@ function fetch_bytes(url::String; max_mb::Int = MAX_MB)
         error("file too large (> $(max_mb)MB)")
     end
     return body
-end
-
-function redact(s::AbstractString)
-    s = replace(String(s),
-        r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}" => "<email>"; count=0)
-    s = replace(s, r"https?://\S+" => "<url>"; count=0)
-    s = replace(s, r"\s+" => " "; count=0)
-    return s
 end
 
 """
@@ -49,6 +47,11 @@ function page_html(; url_value::String="",
                      summary::String="Submit to see results…",
                      llm::String="",
                      error_msg::String="")
+    
+    safe_summary = escape_html_safe(summary)
+    safe_llm     = escape_html_safe(llm)  # optional, but safe for consistency
+    safe_error   = escape_html_safe(error_msg)
+
     css = """
     body{background:#0b0a10;color:#EDE9FE;font-family:ui-sans-serif,system-ui;}
     .bar{padding:12px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -76,8 +79,8 @@ function page_html(; url_value::String="",
   </div>
   $err_html
   <div class="cols">
-    <div class="card"><div class="title">Fetched content</div><pre>$(summary)</pre></div>
-    <div class="card"><div class="title">Claude response</div><pre>$(replace(llm, "&"=>"&amp;"))</pre></div>
+    <div class="card"><div class="title">Fetched content</div><pre>$safe_summary</pre></div>
+    <div class="card"><div class="title">Claude response</div><pre>$safe_llm</pre></div>
   </div>
 </body></html>
 """
@@ -86,7 +89,9 @@ end
 
 # ── Routes (no macros, version-agnostic) ──────────────────────────────────────
 route("/", method = GET) do
-    html(page_html())
+    value = 19
+    summary = "\$$value"         # => "$19"
+    html(page_html(summary=summary))
 end
 
 route("/analyze", method = POST) do
