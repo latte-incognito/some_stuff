@@ -10,7 +10,7 @@ is_valid_url(url::String) = startswith(url, "http://") || startswith(url, "https
 
 function escape_html_safe(s::AbstractString)
     s = replace(String(s), "&"=>"&amp;", "<"=>"&lt;", ">"=>"&gt;", "\"" => "&quot;")
-    s = replace(s, "\$" => "\\\$")  # escape dollar sign for Genie-generated Julia code
+    s = replace(s, "\u0024" => "\uFF04")  # escape dollar sign for Genie-generated Julia code
     return s
 end
 
@@ -89,9 +89,7 @@ end
 
 # ── Routes (no macros, version-agnostic) ──────────────────────────────────────
 route("/", method = GET) do
-    value = 19
-    summary = "\$$value"         # => "$19"
-    html(page_html(summary=summary))
+    html(page_html())
 end
 
 route("/analyze", method = POST) do
