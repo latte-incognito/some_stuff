@@ -26,10 +26,8 @@ Extracts structured test results:
 - retry count
 - list of error messages (only .message)
 """
-function extract_test_data_with_hierarchy(path::String)
-    raw = read(path, String)
-    println(raw)
-    json = JSON.parse(raw)
+function extract_test_data_with_hierarchy(json_str::String)
+    json = JSON.parse(json_str)
 
     results = []
 
@@ -195,7 +193,7 @@ route("/analyze", method = POST) do
         summary = info * content_escaped
        
         # Prepare your LLM payload (whatever JSON you want to send)
-        payload = extract_test_data_with_hierarchy("lol.json") # here `content` is the fetched body string
+        payload = extract_test_data_with_hierarchy(content) # here `content` is the fetched body string
 
         api_key = get(ENV, "MY_LLM_KEY", nothing)
         if api_key === nothing
