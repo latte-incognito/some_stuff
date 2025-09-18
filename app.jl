@@ -14,6 +14,86 @@ function escape_html_safe(s::AbstractString)
     return s
 end
 
+
+"""
+    extract_test_data_with_hierarchy(path::String) -> Vector{Dict}
+
+Extracts structured test results:
+- title
+- full_title (joined ancestorTitles + title)
+- status
+- duration
+- retry count
+- list of error messages (only .message)
+"""
+function extract_test_data_with_hierarchy(path::String)
+    raw = read(path, String)
+    println(raw)
+    json = JSON.parse(raw)
+
+    results = []
+
+   function walk_suites(suites, parent_titles=[])
+        for suite in suites
+            if !(suite isa Dict)
+                continue
+            end
+
+            suite_title = get(suite, "title", "")
+            new_parent_titles = isempty(suite_title) ? parent_titles : vcat(parent_titles, suite_title)
+
+            # Recurse into child suites
+            if haskey(suite, "suites") && suite["suites"] isa Vector
+                walk_suites(suite["suites"], new_parent_titles)
+            end
+
+            # Process specs (leaf nodes)
+            if haskey(suite, "specs") && suite["specs"] isa Vector
+                for spec in suite["specs"]
+                    if !(spec isa Dict)
+                        continue
+                    end
+
+                    spec_title = get(spec, "title", "")
+                    for test in get(spec, "tests", [])
+                        if !(test isa Dict)
+                            continue
+                        end
+
+                        test_title = get(test, "title", "")
+                        full_title = join(vcat(new_parent_titles, spec_title, test_title), " > ")
+
+                        for result in get(test, "results", [])
+                            if !(result isa Dict)
+                                continue
+                            end
+
+                            error_msg = ""
+                            if haskey(result, "error") && result["error"] isa Dict
+                                error_msg = get(result["error"], "message", "")
+                            end
+
+                            push!(results, Dict(
+                                "full_title" => full_title,
+                                "status"     => get(result, "status", "unknown"),
+                                "duration"   => get(result, "duration", missing),
+                                "error"      => error_msg,
+                                "retry"      => get(result, "retry", missing)
+                            ))
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if haskey(json, "suites") && json["suites"] isa Vector
+        walk_suites(json["suites"])
+    end
+
+    return results
+end
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 function fetch_bytes(url::String; max_mb::Int = MAX_MB)
     r = HTTP.get(url; retry=false, status_exception=false, readtimeout=30)
@@ -108,13 +188,14 @@ route("/analyze", method = POST) do
         catch
             "Binary content (" * string(sizeof(body)) * " bytes). Base64 below:\n\n" * base64encode(body)
         end
+        
         # Escape before injecting into HTML
         content_escaped = escape_html(content)
         info = "Fetched $(sizeof(body)) bytes from:\n" * escape_html(url) * "\n\n"
         summary = info * content_escaped
-
+       
         # Prepare your LLM payload (whatever JSON you want to send)
-        payload = Dict("input" => content)  # here `content` is the fetched body string
+        payload = extract_test_data_with_hierarchy("lol.json") # here `content` is the fetched body string
 
         api_key = get(ENV, "MY_LLM_KEY", nothing)
         if api_key === nothing
